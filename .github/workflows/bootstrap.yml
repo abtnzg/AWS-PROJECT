@@ -43,11 +43,6 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "AWS Account: $ACCOUNT_ID"
 
-      - name: Check bucket region
-        run: |
-          aws s3api get-bucket-location \
-            --bucket aws-project-terraform-state
-
       - name: Terraform Init
         working-directory: bootstrap
         run: terraform init
