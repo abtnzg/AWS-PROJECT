@@ -10,8 +10,9 @@ variable "san_names" {
 }
 
 variable "route53_zone_id" {
-  description = "Route53 hosted zone ID used for DNS validation"
+  description = "Route53 hosted zone ID used for DNS validation (optional)"
   type        = string
+  default     = ""
 }
 
 variable "tags" {

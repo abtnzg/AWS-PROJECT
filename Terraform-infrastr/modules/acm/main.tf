@@ -1,8 +1,8 @@
 resource "aws_acm_certificate" "this" {
-  domain_name               = var.domain_name
-  validation_method         = "DNS"
+  domain_name       = var.domain_name
+  validation_method = var.route53_zone_id != "" ? "DNS" : "EMAIL"
   subject_alternative_names = var.san_names
-  tags                      = var.tags
+  tags              = var.tags
 
   lifecycle {
     create_before_destroy = true

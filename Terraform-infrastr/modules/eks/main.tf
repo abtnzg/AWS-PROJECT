@@ -1,7 +1,8 @@
 # EKS Cluster
 resource "aws_eks_cluster" "eks_cluster" {
-  name     = var.eks_cluster_name
-  role_arn = aws_iam_role.eks_cluster_role.arn
+  name             = var.eks_cluster_name
+  role_arn         = aws_iam_role.eks_cluster_role.arn
+  authentication_mode = "API_AND_CONFIG_MAP"
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids

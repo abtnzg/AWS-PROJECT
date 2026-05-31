@@ -35,11 +35,11 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = var.certificate_arn != "" ? "redirect" : "forward"
+    type = var.create_https_listener ? "redirect" : "forward"
 
     # REDIRECT → HTTPS
     dynamic "redirect" {
-      for_each = var.certificate_arn != "" ? [1] : []
+      for_each = var.create_https_listener ? [1] : []
       content {
         protocol    = "HTTPS"
         port        = "443"
@@ -49,7 +49,7 @@ resource "aws_lb_listener" "http" {
 
     # FORWARD → Target group
     dynamic "forward" {
-      for_each = var.certificate_arn == "" ? [1] : []
+      for_each = var.create_https_listener ? [] : [1]
       content {
         target_group {
           arn = aws_lb_target_group.this.arn
