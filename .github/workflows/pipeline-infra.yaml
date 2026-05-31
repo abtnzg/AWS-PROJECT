@@ -58,27 +58,27 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init (bootstrap)
-        working-directory: bootstrap
+        working-directory: ./Terraform-infrastr/bootstrap
         run: terraform init
 
       - name: Terraform Plan (bootstrap)
-        working-directory: bootstrap
+        working-directory: ./Terraform-infrastr/bootstrap
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply (bootstrap)
-        working-directory: bootstrap
+        working-directory: ./Terraform-infrastr/bootstrap
         run: terraform apply -auto-approve tfplan
 
       - name: Get S3 bucket output
         id: bucket
-        working-directory: bootstrap
+        working-directory: ./Terraform-infrastr/bootstrap
         run: |
           BUCKET=$(terraform output -raw state_bucket_name | head -n 1 | tr -d '\r')
           printf "bucket=%s\n" "$BUCKET" >> $GITHUB_OUTPUT
 
       - name: Get DynamoDB table output
         id: lock
-        working-directory: bootstrap
+        working-directory: ./Terraform-infrastr/bootstrap
         run: |
             LOCK=$(terraform output -raw locks_table_name | head -n 1 | tr -d '\r')
             printf "lock_table=%s\n" "$LOCK" >> $GITHUB_OUTPUT
