@@ -1,12 +1,12 @@
 resource "aws_lb" "this" {
-  name               = var.name
-  internal           = var.internal
-  load_balancer_type = "application"
-  security_groups    = var.security_group_ids
-  subnets            = var.subnet_ids
-  ip_address_type    = var.ip_address_type
+  name                       = var.name
+  internal                   = var.internal
+  load_balancer_type         = "application"
+  security_groups            = var.security_group_ids
+  subnets                    = var.subnet_ids
+  ip_address_type            = var.ip_address_type
   enable_deletion_protection = var.enable_deletion_protection
-  tags               = merge(var.tags, { Name = var.name })
+  tags                       = merge(var.tags, { Name = var.name })
 }
 
 resource "aws_lb_target_group" "this" {

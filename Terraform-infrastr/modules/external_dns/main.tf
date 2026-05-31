@@ -1,12 +1,12 @@
 locals {
-  hosted_zone_arns = [for id in var.hosted_zone_ids : "arn:aws:route53:::hostedzone/${id}"]
+  hosted_zone_arns  = [for id in var.hosted_zone_ids : "arn:aws:route53:::hostedzone/${id}"]
   route53_resources = length(local.hosted_zone_arns) > 0 ? local.hosted_zone_arns : ["*"]
 }
 
 resource "aws_iam_policy" "external_dns" {
   name        = "${var.name}-route53-policy"
   description = "Route53 permissions for external-dns"
-  policy      = jsonencode({
+  policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
