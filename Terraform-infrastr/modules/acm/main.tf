@@ -3,21 +3,34 @@ resource "aws_acm_certificate" "this" {
   validation_method         = "DNS"
   subject_alternative_names = var.san_names
   tags                      = var.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_route53_record" "validation" {
-  count = var.route53_zone_id != "" ? length(aws_acm_certificate.this.domain_validation_options) : 0
+  for_each = var.route53_zone_id != "" ? {
+    for dvo in aws_acm_certificate.this.domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
 
   zone_id = var.route53_zone_id
-  name    = aws_acm_certificate.this.domain_validation_options[count.index].resource_record_name
-  type    = aws_acm_certificate.this.domain_validation_options[count.index].resource_record_type
+  name    = each.value.name
+  type    = each.value.type
   ttl     = 60
-  records = [aws_acm_certificate.this.domain_validation_options[count.index].resource_record_value]
+  records = [each.value.record]
 }
 
 resource "aws_acm_certificate_validation" "this" {
   count = var.route53_zone_id != "" ? 1 : 0
 
   certificate_arn         = aws_acm_certificate.this.arn
-  validation_record_fqdns = aws_route53_record.validation[*].fqdn
+  validation_record_fqdns = [for record in aws_route53_record.validation : record.fqdn]
+
+  depends_on = [aws_route53_record.validation]
 }

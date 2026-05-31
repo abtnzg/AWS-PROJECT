@@ -10,5 +10,5 @@ output "certificate_domain_name" {
 
 output "validation_record_fqdns" {
   description = "FQDNs for DNS validation records"
-  value       = aws_route53_record.validation[*].fqdn
+  value       = [for record in aws_route53_record.validation : record.fqdn]
 }
