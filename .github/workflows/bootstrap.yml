@@ -49,7 +49,7 @@ jobs:
 
       - name: Terraform Format Check
         working-directory: bootstrap
-        run: terraform fmt -check -recursive
+        run: terraform fmt -check -recursive -diff
 
       - name: Terraform Validate
         working-directory: bootstrap
