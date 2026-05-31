@@ -72,12 +72,16 @@ jobs:
       - name: Get S3 bucket output
         id: bucket
         working-directory: bootstrap
-        run: echo "bucket=$(terraform output -raw state_bucket)" >> $GITHUB_OUTPUT
+        run: |
+            BUCKET=$(terraform output -raw state_bucket_name)
+            echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
 
       - name: Get DynamoDB table output
         id: lock
         working-directory: bootstrap
-        run: echo "lock_table=$(terraform output -raw lock_table)" >> $GITHUB_OUTPUT
+        run: |
+            LOCK_TABLE=$(terraform output -raw lock_table)
+            echo "lock_table=$LOCK_TABLE" >> $GITHUB_OUTPUT
 
 
   # ---------------------------------------------------------
