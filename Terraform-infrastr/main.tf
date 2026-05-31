@@ -60,7 +60,7 @@ module "alb" {
   subnet_ids            = module.vpc.public_subnet_ids
   security_group_ids    = [module.alb_sg.security_group_id]
   certificate_arn       = module.acm.certificate_arn
-  create_https_listener = var.route53_zone_id != ""
+  create_https_listener = var.enable_https
   tags                  = local.common_tags
 }
 

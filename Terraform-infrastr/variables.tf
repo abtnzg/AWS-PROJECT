@@ -73,3 +73,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_https" {
+  description = "Enable HTTPS listener on ALB with ACM certificate"
+  type        = bool
+  default     = true
+}

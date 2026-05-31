@@ -16,6 +16,8 @@ san_names       = ["*.851725468573.realhandsonlabs.net"]
 
 external_dns_hosted_zone_ids = ["Z07837731K16F2Z68USQL"]
 
+enable_https = true
+
 tags = {
   Project     = "aws-project"
   Environment = "dev"
