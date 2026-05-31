@@ -108,3 +108,8 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_deletion_protection" {
+  type    = bool
+  default = false
+}
