@@ -3,7 +3,7 @@ resource "random_id" "bucket_suffix" {
 }
 
 resource "aws_s3_bucket" "terraform_state" {
- bucket = "${var.state_bucket_name}-${random_id.bucket_suffix.hex}"
+  bucket = "${var.state_bucket_name}-${random_id.bucket_suffix.hex}"
 
   tags = merge(var.tags, {
     Name = var.state_bucket_name
