@@ -68,3 +68,14 @@ jobs:
         run: |
           echo "=== Backend Resources Created ==="
           terraform output
+      
+      - name: Get S3 bucket output
+        id: bucket
+        working-directory: bootstrap
+        run: echo "bucket=$(terraform output -raw state_bucket)" >> $GITHUB_OUTPUT
+
+      - name: Get DynamoDB table output
+        id: lock
+        working-directory: bootstrap
+        run: echo "lock_table=$(terraform output -raw lock_table)" >> $GITHUB_OUTPUT
+
