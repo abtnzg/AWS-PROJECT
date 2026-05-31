@@ -73,15 +73,15 @@ jobs:
         id: bucket
         working-directory: bootstrap
         run: |
-            BUCKET=$(terraform output -raw state_bucket_name | head -n 1 | tr -d '\r')
-            echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          BUCKET=$(terraform output -raw state_bucket_name | head -n 1 | tr -d '\r')
+          printf "bucket=%s\n" "$BUCKET" >> $GITHUB_OUTPUT
 
       - name: Get DynamoDB table output
         id: lock
         working-directory: bootstrap
         run: |
             LOCK=$(terraform output -raw locks_table_name | head -n 1 | tr -d '\r')
-            echo "lock_table=$LOCK" >> $GITHUB_OUTPUT
+            printf "lock_table=%s\n" "$LOCK" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------
   # 2) TERRAFORM INFRA (multi-env)
