@@ -54,13 +54,14 @@ module "acm" {
 }
 
 module "alb" {
-  source             = "./modules/alb"
-  name               = var.alb_name
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.public_subnet_ids
-  security_group_ids = [module.alb_sg.security_group_id]
-  certificate_arn    = try(module.acm.certificate_arn, "")
-  tags               = local.common_tags
+  source                = "./modules/alb"
+  name                  = var.alb_name
+  vpc_id                = module.vpc.vpc_id
+  subnet_ids            = module.vpc.public_subnet_ids
+  security_group_ids    = [module.alb_sg.security_group_id]
+  certificate_arn       = module.acm.certificate_arn
+  create_https_listener = var.route53_zone_id != ""
+  tags                  = local.common_tags
 }
 
 module "eks" {

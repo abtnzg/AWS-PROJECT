@@ -37,6 +37,12 @@ variable "certificate_arn" {
   default     = ""
 }
 
+variable "create_https_listener" {
+  description = "Whether to create HTTPS listener"
+  type        = bool
+  default     = false
+}
+
 variable "target_group_port" {
   description = "Port for the target group"
   type        = number
