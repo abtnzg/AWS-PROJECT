@@ -37,6 +37,7 @@ resource "aws_lb_listener" "http" {
   default_action {
     type = var.certificate_arn != "" ? "redirect" : "forward"
 
+    # REDIRECT → HTTPS
     dynamic "redirect" {
       for_each = var.certificate_arn != "" ? [1] : []
       content {
@@ -46,10 +47,13 @@ resource "aws_lb_listener" "http" {
       }
     }
 
+    # FORWARD → Target group
     dynamic "forward" {
       for_each = var.certificate_arn == "" ? [1] : []
       content {
-        target_group_arn = aws_lb_target_group.this.arn
+        target_group {
+          arn = aws_lb_target_group.this.arn
+        }
       }
     }
   }
@@ -64,7 +68,12 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = var.certificate_arn
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.this.arn
+    type = "forward"
+
+    forward {
+      target_group {
+        arn = aws_lb_target_group.this.arn
+      }
+    }
   }
 }
