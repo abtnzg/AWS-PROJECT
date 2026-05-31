@@ -10,11 +10,11 @@ eks_cluster_name = "aws-project-eks"
 
 alb_name = "aws-project-alb"
 
-route53_zone_id = "Z1234567890ABC"
+route53_zone_id = "Z07837731K16F2Z68USQL"
 domain_name = "example.com"
 san_names = ["www.example.com"]
 
-external_dns_hosted_zone_ids = ["Z1234567890ABC"]
+external_dns_hosted_zone_ids = ["Z07837731K16F2Z68USQL"]
 
 tags = {
   Project = "aws-project"

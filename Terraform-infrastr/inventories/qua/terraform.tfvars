@@ -10,11 +10,11 @@ eks_cluster_name = "aws-project-eks-qua"
 
 alb_name = "aws-project-alb-qua"
 
-route53_zone_id = "Z1234567890ABC"
-domain_name = "qua.example.com"
-san_names = ["*.qua.example.com"]
+route53_zone_id = "Z07837731K16F2Z68USQL"
+domain_name = "851725468573.realhandsonlabs.net"
+san_names = ["*.851725468573.realhandsonlabs.net"]
 
-external_dns_hosted_zone_ids = ["Z1234567890ABC"]
+external_dns_hosted_zone_ids = ["Z07837731K16F2Z68USQL"]
 
 tags = {
   Project     = "aws-project"
