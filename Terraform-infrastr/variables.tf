@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for all resources"
   type        = string
-  default     = "eu-west-3"
+  default     = "us-east-1"
 }
 
 variable "vpc_name" {
@@ -31,7 +31,7 @@ variable "private_subnet_cidrs" {
 variable "availability_zones" {
   description = "Availability zones for subnet placement"
   type        = list(string)
-  default     = ["eu-west-3a", "eu-west-3b"]
+  default     = ["us-east-1a", "us-east-1b"]
 }
 
 variable "eks_cluster_name" {

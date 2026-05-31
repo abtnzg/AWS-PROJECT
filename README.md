@@ -88,7 +88,7 @@ Ajoute ces secrets dans **Settings** > **Secrets and variables** > **Actions** :
 
 - `AWS_ACCESS_KEY_ID` : clé d'accès AWS
 - `AWS_SECRET_ACCESS_KEY` : clé secrète AWS
-- `AWS_REGION` : région AWS (ex: `eu-west-3`)
+- `AWS_REGION` : région AWS (ex: `us-east-1`)
 
 ### IAM Policy minimale
 

@@ -49,7 +49,7 @@ terraform apply
 
 Modifiables dans `variables.tf` ou via `-var` :
 
-- `aws_region` : région AWS (défaut: `eu-west-3`)
+- `aws_region` : région AWS (défaut: `us-east-1`)
 - `state_bucket_name` : nom du bucket S3 (défaut: `aws-project-terraform-state`)
 - `locks_table_name` : nom de la table DynamoDB (défaut: `terraform-state-locks`)
 - `tags` : tags AWS à appliquer
