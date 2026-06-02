@@ -1,5 +1,5 @@
 bucket         = "aws-project-terraform-state"
 key            = "Terraform-infrastr/inventories/rec/terraform.tfstate"
-region         = "us-east-1"
+region         = "eu-west-1"
 dynamodb_table = "terraform-state-locks"
 encrypt        = true
