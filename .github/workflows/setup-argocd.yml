@@ -1,0 +1,176 @@
+name: Setup ArgoCD
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS Cluster name'
+        required: true
+        default: 'aws-project-eks-dev'
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'eu-west-1'
+
+env:
+  AWS_REGION: ${{ inputs.aws_region || 'eu-west-1' }}
+  CLUSTER_NAME: ${{ inputs.cluster_name || 'aws-project-eks-dev' }}
+  ARGOCD_NAMESPACE: argocd
+  HELM_VERSION: 3.12.0
+
+jobs:
+  setup-argocd:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig for cluster: ${{ env.CLUSTER_NAME }}"
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster access
+        run: |
+          echo "Verifying cluster access..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Create ArgoCD namespace
+        run: |
+          echo "Creating ArgoCD namespace..."
+          kubectl create namespace ${{ env.ARGOCD_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace ${{ env.ARGOCD_NAMESPACE }} name=${{ env.ARGOCD_NAMESPACE }} --overwrite
+
+      - name: Add ArgoCD Helm repository
+        run: |
+          echo "Adding ArgoCD Helm repository..."
+          helm repo add argocd https://argoproj.github.io/argo-helm
+          helm repo update
+
+      - name: Install ArgoCD with Helm
+        run: |
+          echo "Installing ArgoCD with Helm..."
+          helm upgrade --install argocd argocd/argo-cd \
+            --namespace ${{ env.ARGOCD_NAMESPACE }} \
+            --values - <<'EOF'
+          server:
+            service:
+              type: LoadBalancer
+            config:
+              url: https://argocd.205474062795.realhandsonlabs.net
+          
+          configs:
+            cm:
+              application.instanceLabelKey: argocd.argoproj.io/instance
+          
+          repoServer:
+            autoscaling:
+              enabled: true
+              minReplicas: 2
+          
+          controller:
+            replicas: 1
+          EOF
+
+      - name: Wait for ArgoCD server
+        run: |
+          echo "Waiting for ArgoCD server to be ready..."
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/argocd-server -n ${{ env.ARGOCD_NAMESPACE }}
+
+      - name: Get ArgoCD LoadBalancer endpoint
+        run: |
+          echo "Getting ArgoCD LoadBalancer endpoint..."
+          ARGOCD_URL=$(kubectl get svc argocd-server -n ${{ env.ARGOCD_NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "ArgoCD URL: $ARGOCD_URL"
+          echo "ARGOCD_URL=$ARGOCD_URL" >> $GITHUB_ENV
+
+      - name: Get ArgoCD admin password
+        run: |
+          echo "Getting ArgoCD admin password..."
+          ADMIN_PASSWORD=$(kubectl -n ${{ env.ARGOCD_NAMESPACE }} get secret argocd-initial-admin-secret \
+            -o jsonpath='{.data.password}' | base64 -d)
+          echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> $GITHUB_ENV
+          echo "::add-mask::$ADMIN_PASSWORD"
+
+      - name: Generate ArgoCD API token
+        run: |
+          echo "Instructions for generating ArgoCD token:"
+          echo "1. Login to ArgoCD: argocd login ${{ env.ARGOCD_URL }}"
+          echo "2. Generate token: argocd account generate-token --account default"
+          echo "3. Add ARGOCD_TOKEN to GitHub secrets"
+
+      - name: Create deployment report
+        run: |
+          cat > argocd-setup-report.txt << 'REPORT'
+          ===== ArgoCD Setup Complete =====
+          
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          Namespace: ${{ env.ARGOCD_NAMESPACE }}
+          
+          ArgoCD Server URL: ${{ env.ARGOCD_URL }}
+          Admin Username: admin
+          Admin Password: ${{ env.ADMIN_PASSWORD }}
+          
+          Next Steps:
+          1. argocd login ${{ env.ARGOCD_URL }}
+          2. argocd account generate-token
+          3. Add ARGOCD_TOKEN to GitHub secrets
+          4. Add GitHub repository: 
+             argocd repo add https://github.com/${{ github.repository }} \
+               --username <github-username> \
+               --password <github-token>
+          
+          REPORT
+          cat argocd-setup-report.txt
+
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: argocd-setup-report
+          path: argocd-setup-report.txt
+
+      - name: Slack notification
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ ArgoCD Setup Complete",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *ArgoCD Setup Complete*\n*Cluster:* ${{ env.CLUSTER_NAME }}\n*Region:* ${{ env.AWS_REGION }}\n*URL:* ${{ env.ARGOCD_URL }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

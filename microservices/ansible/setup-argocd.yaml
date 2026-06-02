@@ -1,0 +1,107 @@
+---
+# Ansible Playbook to setup ArgoCD on EKS
+- name: Setup ArgoCD on EKS
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    argocd_namespace: argocd
+    argocd_version: "v2.8.0"
+    github_repo: "https://github.com/abtnzg/AWS-PROJECT"
+    eks_cluster_name: "aws-project-eks-dev"
+    aws_region: "eu-west-1"
+
+  tasks:
+    - name: Create ArgoCD namespace
+      kubernetes.core.k8s:
+        name: "{{ argocd_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Add ArgoCD Helm repository
+      kubernetes.core.helm_repository:
+        name: argoproj
+        repo_url: https://argoproj.github.io/argo-helm
+        state: present
+
+    - name: Deploy ArgoCD using Helm
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argoproj/argo-cd
+        chart_version: "5.46.0"
+        release_namespace: "{{ argocd_namespace }}"
+        create_namespace: true
+        values:
+          server:
+            service:
+              type: LoadBalancer
+          configs:
+            cm:
+              url: "https://argocd.205474062795.realhandsonlabs.net"
+              application.instanceLabelKey: argocd.argoproj.io/instance
+          repoServer:
+            autoscaling:
+              enabled: true
+              minReplicas: 2
+
+    - name: Wait for ArgoCD to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ argocd_namespace }}"
+        name: argocd-server
+        wait: yes
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_sleep: 10
+        wait_timeout: 300
+
+    - name: Get ArgoCD initial admin password
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: "{{ argocd_namespace }}"
+        name: argocd-initial-admin-secret
+      register: argocd_secret
+
+    - name: Display ArgoCD admin password
+      debug:
+        msg: "ArgoCD admin password: {{ argocd_secret.resources[0].data['password'] | b64decode }}"
+
+    - name: Create GitHub repository secret for ArgoCD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: github-repo-credentials
+            namespace: "{{ argocd_namespace }}"
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          type: Opaque
+          stringData:
+            type: git
+            url: "{{ github_repo }}"
+            username: "{{ lookup('env', 'GITHUB_USERNAME') }}"
+            password: "{{ lookup('env', 'GITHUB_TOKEN') }}"
+
+    - name: Apply ArgoCD applications
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', 'argocd/applications.yaml') }}"
+
+    - name: Verify ArgoCD Applications are synced
+      kubernetes.core.k8s_info:
+        kind: Application
+        namespace: "{{ argocd_namespace }}"
+        name: "microservices-dev"
+      register: argocd_app
+      until: argocd_app.resources[0].status.operationState.phase == "Succeeded"
+      retries: 10
+      delay: 30
+
+    - name: Display deployment status
+      debug:
+        msg: "ArgoCD Application status: {{ argocd_app.resources[0].status.syncResult.resources | length }} resources synced"

@@ -1,0 +1,157 @@
+namespace: microservices
+
+# Global settings
+global:
+  environment: dev
+  region: eu-west-1
+  accountId: "205474062795"
+  domain: "205474062795.realhandsonlabs.net"
+  imagePullPolicy: IfNotPresent
+
+# MySQL Configuration
+mysql:
+  enabled: true
+  image: mysql:8.0
+  replicas: 1
+  storage: 10Gi
+  storageClass: gp2
+  rootPassword: rootpassword
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# API Gateway Configuration
+apiGateway:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: "205474062795.dkr.ecr.eu-west-1.amazonaws.com/api-gateway"
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3000
+  service:
+    type: LoadBalancer
+    port: 80
+    targetPort: 3000
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      kubernetes.io/ingress.class: alb
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+    hosts:
+      - host: "api.205474062795.realhandsonlabs.net"
+        paths:
+          - path: /
+            pathType: Prefix
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+
+# User Service Configuration
+userService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: "205474062795.dkr.ecr.eu-west-1.amazonaws.com/user-service"
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3001
+  service:
+    type: ClusterIP
+    port: 3001
+    targetPort: 3001
+  database:
+    name: users_db
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+# Product Service Configuration
+productService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: "205474062795.dkr.ecr.eu-west-1.amazonaws.com/product-service"
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3002
+  service:
+    type: ClusterIP
+    port: 3002
+    targetPort: 3002
+  database:
+    name: products_db
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+# Order Service Configuration
+orderService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: "205474062795.dkr.ecr.eu-west-1.amazonaws.com/order-service"
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 3003
+  service:
+    type: ClusterIP
+    port: 3003
+    targetPort: 3003
+  database:
+    name: orders_db
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 70
+
+# Network Policies
+networkPolicy:
+  enabled: true
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

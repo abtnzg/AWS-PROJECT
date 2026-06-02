@@ -1,0 +1,141 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: microservices-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abtnzg/AWS-PROJECT
+    targetRevision: main
+    path: microservices/helm/microservices-chart
+    helm:
+      releaseName: microservices
+      values: |
+        global:
+          environment: dev
+          region: eu-west-1
+          accountId: "205474062795"
+      valueFiles:
+        - values-dev.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: microservices
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: microservices-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/abtnzg/AWS-PROJECT
+    targetRevision: main
+    path: microservices/helm/microservices-chart
+    helm:
+      releaseName: microservices
+      values: |
+        global:
+          environment: prod
+          region: eu-west-1
+          accountId: "205474062795"
+        apiGateway:
+          replicaCount: 3
+        userService:
+          replicaCount: 3
+        productService:
+          replicaCount: 3
+        orderService:
+          replicaCount: 3
+      valueFiles:
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: microservices-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+
+---
+# ArgoCD ApplicationSet for multiple environments
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: microservices-applicationset
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+  - list:
+      elements:
+      - namespace: microservices-dev
+        name: dev
+        replicas: 2
+      - namespace: microservices-prod
+        name: prod
+        replicas: 3
+  template:
+    metadata:
+      name: "microservices-{{.name}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/abtnzg/AWS-PROJECT
+        targetRevision: main
+        path: microservices/helm/microservices-chart
+        helm:
+          releaseName: microservices-{{.name}}
+          values: |
+            global:
+              environment: "{{.name}}"
+              region: eu-west-1
+              accountId: "205474062795"
+            apiGateway:
+              replicaCount: {{.replicas}}
+            userService:
+              replicaCount: {{.replicas}}
+            productService:
+              replicaCount: {{.replicas}}
+            orderService:
+              replicaCount: {{.replicas}}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true

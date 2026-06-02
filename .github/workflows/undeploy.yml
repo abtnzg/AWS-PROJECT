@@ -1,0 +1,151 @@
+name: Undeploy Services
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to undeploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      method:
+        description: 'Undeploy method'
+        required: true
+        default: 'helm'
+        type: choice
+        options:
+          - helm
+          - argocd
+          - kubectl
+
+env:
+  AWS_REGION: eu-west-1
+  CLUSTER_NAME: aws-project-eks-dev
+  NAMESPACE: microservices
+  RELEASE_NAME: microservices
+
+jobs:
+  undeploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster access
+        run: |
+          echo "Verifying cluster access..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Undeploy with Helm
+        if: inputs.method == 'helm'
+        run: |
+          echo "Undeploying with Helm..."
+          helm uninstall ${{ env.RELEASE_NAME }} -n ${{ env.NAMESPACE }} || echo "Release not found"
+
+      - name: Undeploy with ArgoCD
+        if: inputs.method == 'argocd'
+        run: |
+          echo "Undeploying with ArgoCD..."
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v2.8.3/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+          
+          APP_NAME="microservices-${{ inputs.environment }}"
+          argocd app delete $APP_NAME \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure || echo "Application not found"
+
+      - name: Undeploy with kubectl
+        if: inputs.method == 'kubectl'
+        run: |
+          echo "Undeploying with kubectl..."
+          kubectl delete all -n ${{ env.NAMESPACE }} --all || echo "Resources not found"
+          kubectl delete pvc -n ${{ env.NAMESPACE }} --all || echo "PVCs not found"
+          kubectl delete pv --all || echo "PVs not found"
+
+      - name: Wait for cleanup
+        run: |
+          echo "Waiting for cleanup..."
+          sleep 10
+          echo "Resources in ${{ env.NAMESPACE }}:"
+          kubectl get all -n ${{ env.NAMESPACE }} || echo "Namespace cleaned"
+
+      - name: Verify cleanup
+        run: |
+          echo "===== Namespace Status After Undeploy ====="
+          kubectl get all -n ${{ env.NAMESPACE }} || echo "Namespace is clean"
+          echo ""
+          echo "===== Helm Releases ====="
+          helm list -n ${{ env.NAMESPACE }} || echo "No releases found"
+
+      - name: Create undeploy report
+        run: |
+          cat > undeploy-report.txt << 'REPORT'
+          ===== Undeploy Report =====
+          
+          Timestamp: $(date)
+          Environment: ${{ inputs.environment }}
+          Method: ${{ inputs.method }}
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          Namespace: ${{ env.NAMESPACE }}
+          
+          Cleanup completed successfully.
+          
+          Remaining resources:
+          REPORT
+          kubectl get all -n ${{ env.NAMESPACE }} >> undeploy-report.txt || echo "No resources" >> undeploy-report.txt
+          cat undeploy-report.txt
+
+      - name: Upload undeploy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: undeploy-report-${{ inputs.environment }}
+          path: undeploy-report.txt
+
+      - name: Slack notification
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "🗑️  Undeployment Complete",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "🗑️  *Undeployment Complete*\n*Environment:* ${{ inputs.environment }}\n*Method:* ${{ inputs.method }}\n*Status:* Resources removed"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

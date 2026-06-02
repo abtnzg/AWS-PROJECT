@@ -1,0 +1,87 @@
+---
+# Ansible Playbook for health checks and verification
+- name: Verify Deployment Health
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+
+  vars:
+    microservices_namespace: microservices
+    health_check_timeout: 300
+    health_check_interval: 10
+
+  tasks:
+    - name: Check all pods are running
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ microservices_namespace }}"
+      register: pods
+      until: pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == (pods.resources | length)
+      retries: "{{ health_check_timeout // health_check_interval }}"
+      delay: "{{ health_check_interval }}"
+
+    - name: Check API Gateway service
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: "{{ microservices_namespace }}"
+        name: api-gateway
+      register: api_gateway_svc
+
+    - name: Display API Gateway service info
+      debug:
+        msg: "API Gateway LoadBalancer: {{ api_gateway_svc.resources[0].status.loadBalancer.ingress[0].hostname }}"
+      when: api_gateway_svc.resources[0].status.loadBalancer.ingress is defined
+
+    - name: Check HPA status
+      kubernetes.core.k8s_info:
+        kind: HorizontalPodAutoscaler
+        namespace: "{{ microservices_namespace }}"
+      register: hpa_status
+
+    - name: Display HPA status
+      debug:
+        msg: "HPA {{ item.metadata.name }}: {{ item.status.currentReplicas }}/{{ item.status.desiredReplicas }} replicas"
+      loop: "{{ hpa_status.resources }}"
+
+    - name: Test API Gateway health
+      uri:
+        url: "http://{{ api_gateway_svc.resources[0].spec.clusterIP }}:3000/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      retries: 5
+      delay: 10
+
+    - name: Display health check result
+      debug:
+        msg: "API Gateway health check: {{ health_check.json }}"
+
+    - name: Generate deployment report
+      copy:
+        content: |
+          Deployment Report
+          =================
+          
+          Namespace: {{ microservices_namespace }}
+          
+          Pods Running:
+          {% for pod in pods.resources %}
+            - {{ pod.metadata.name }}: {{ pod.status.phase }}
+          {% endfor %}
+          
+          Services:
+          {% for svc in services.resources %}
+            - {{ svc.metadata.name }}: {{ svc.spec.clusterIP }}
+          {% endfor %}
+          
+          HPA Status:
+          {% for hpa in hpa_status.resources %}
+            - {{ hpa.metadata.name }}: {{ hpa.status.currentReplicas }}/{{ hpa.status.desiredReplicas }}
+          {% endfor %}
+          
+          API Gateway Health: {{ health_check.json.status }}
+        dest: "/tmp/deployment_report.txt"
+
+    - name: Display deployment report
+      debug:
+        msg: "{{ lookup('file', '/tmp/deployment_report.txt') }}"

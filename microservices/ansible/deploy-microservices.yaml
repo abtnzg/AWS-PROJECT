@@ -1,0 +1,89 @@
+---
+# Ansible Playbook to deploy microservices using Helm
+- name: Deploy Microservices using Helm
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  vars:
+    microservices_namespace: microservices
+    helm_release_name: microservices
+    chart_path: "microservices/helm/microservices-chart"
+    environment: "{{ deploy_env | default('dev') }}"
+    image_tag: "{{ image_tag | default('latest') }}"
+
+  tasks:
+    - name: Create microservices namespace
+      kubernetes.core.k8s:
+        name: "{{ microservices_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Label namespace for network policies
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ microservices_namespace }}"
+            labels:
+              name: "{{ microservices_namespace }}"
+
+    - name: Deploy microservices with Helm
+      kubernetes.core.helm:
+        name: "{{ helm_release_name }}"
+        chart_ref: "{{ chart_path }}"
+        release_namespace: "{{ microservices_namespace }}"
+        create_namespace: true
+        values:
+          global:
+            environment: "{{ environment }}"
+            imagePullPolicy: IfNotPresent
+          apiGateway:
+            image:
+              tag: "{{ image_tag }}"
+          userService:
+            image:
+              tag: "{{ image_tag }}"
+          productService:
+            image:
+              tag: "{{ image_tag }}"
+          orderService:
+            image:
+              tag: "{{ image_tag }}"
+
+    - name: Wait for microservices to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ microservices_namespace }}"
+        name: api-gateway
+        wait: yes
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_sleep: 10
+        wait_timeout: 300
+
+    - name: Get microservices status
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ microservices_namespace }}"
+      register: deployments
+
+    - name: Display deployment status
+      debug:
+        msg: "Deployment {{ item.metadata.name }}: {{ item.status.replicas }} replicas running"
+      loop: "{{ deployments.resources }}"
+
+    - name: Get service endpoints
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: "{{ microservices_namespace }}"
+      register: services
+
+    - name: Display service endpoints
+      debug:
+        msg: "Service {{ item.metadata.name }}: {{ item.spec.clusterIP }}:{{ item.spec.ports[0].port }}"
+      loop: "{{ services.resources }}"

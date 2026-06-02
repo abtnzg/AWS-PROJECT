@@ -1,0 +1,240 @@
+name: Deploy with ArgoCD
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      image_tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'latest'
+      force_sync:
+        description: 'Force sync even if out of sync'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: eu-west-1
+  CLUSTER_NAME: aws-project-eks-dev
+  ARGOCD_NAMESPACE: argocd
+
+jobs:
+  argocd-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup ArgoCD CLI
+        run: |
+          echo "Installing ArgoCD CLI..."
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v2.8.3/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster access
+        run: |
+          echo "Verifying cluster access..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Get ArgoCD server endpoint
+        run: |
+          echo "Getting ArgoCD server endpoint..."
+          ARGOCD_SERVER=$(kubectl get svc argocd-server -n ${{ env.ARGOCD_NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          
+          if [ -z "$ARGOCD_SERVER" ]; then
+            echo "⚠️  ArgoCD LoadBalancer endpoint not found. Trying port-forward..."
+            kubectl port-forward svc/argocd-server 8080:443 -n ${{ env.ARGOCD_NAMESPACE }} &
+            sleep 5
+            ARGOCD_SERVER="localhost:8080"
+          fi
+          
+          echo "ARGOCD_SERVER=$ARGOCD_SERVER" >> $GITHUB_ENV
+          echo "ArgoCD Server: $ARGOCD_SERVER"
+
+      - name: Apply ArgoCD applications
+        run: |
+          echo "Applying ArgoCD applications..."
+          kubectl apply -f microservices/argocd/applications.yaml
+
+      - name: Get ArgoCD application name
+        run: |
+          APP_NAME="microservices-${{ inputs.environment }}"
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "Application: $APP_NAME"
+
+      - name: Wait for ArgoCD application
+        run: |
+          echo "Waiting for ArgoCD application to exist..."
+          kubectl wait --for=jsonpath='{.metadata.name}' \
+            appproject/${{ env.APP_NAME }} \
+            -n ${{ env.ARGOCD_NAMESPACE }} \
+            --timeout=30s || true
+
+      - name: Login to ArgoCD
+        run: |
+          echo "Logging in to ArgoCD..."
+          argocd login ${{ env.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure || echo "Login may already be cached"
+
+      - name: Get application status
+        continue-on-error: true
+        run: |
+          echo "Getting application status..."
+          argocd app get ${{ env.APP_NAME }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure || echo "Application status check completed"
+
+      - name: Sync ArgoCD application
+        run: |
+          echo "Syncing ArgoCD application..."
+          if [ "${{ inputs.force_sync }}" = "true" ]; then
+            argocd app sync ${{ env.APP_NAME }} \
+              --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+              --insecure \
+              --force
+          else
+            argocd app sync ${{ env.APP_NAME }} \
+              --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+              --insecure
+          fi
+
+      - name: Wait for sync to complete
+        continue-on-error: true
+        run: |
+          echo "Waiting for application sync to complete..."
+          argocd app wait ${{ env.APP_NAME }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure \
+            --sync \
+            --timeout 300
+
+      - name: Check deployment status
+        run: |
+          echo "====== Deployment Status ======"
+          kubectl get pods -n microservices -o wide
+          echo ""
+          echo "====== Services ======"
+          kubectl get svc -n microservices
+          echo ""
+          echo "====== ArgoCD Application Status ======"
+          argocd app get ${{ env.APP_NAME }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure || echo "Status check completed"
+
+      - name: Get API Gateway endpoint
+        run: |
+          echo "Getting API Gateway endpoint..."
+          API_GATEWAY_IP=$(kubectl get svc api-gateway -n microservices \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "API_GATEWAY_IP=$API_GATEWAY_IP" >> $GITHUB_ENV
+          echo "API Gateway endpoint: $API_GATEWAY_IP"
+
+      - name: Health check
+        continue-on-error: true
+        run: |
+          echo "Running health check..."
+          if [ "${{ env.API_GATEWAY_IP }}" != "pending" ]; then
+            curl -f http://${{ env.API_GATEWAY_IP }}/health || true
+          fi
+
+      - name: Create deployment report
+        run: |
+          cat > argocd-deployment-report.txt << 'REPORT'
+          ===== ArgoCD Deployment Report =====
+          
+          Environment: ${{ inputs.environment }}
+          Image Tag: ${{ inputs.image_tag }}
+          Application: ${{ env.APP_NAME }}
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          ArgoCD Server: ${{ env.ARGOCD_SERVER }}
+          
+          API Gateway Endpoint: ${{ env.API_GATEWAY_IP }}
+          
+          Deployment Status:
+          REPORT
+          kubectl get pods -n microservices >> argocd-deployment-report.txt
+          echo "" >> argocd-deployment-report.txt
+          echo "Services:" >> argocd-deployment-report.txt
+          kubectl get svc -n microservices >> argocd-deployment-report.txt
+          cat argocd-deployment-report.txt
+
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: argocd-deployment-report
+          path: argocd-deployment-report.txt
+
+      - name: Slack notification - Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ ArgoCD Deployment Successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *ArgoCD Deployment Successful*\n*Environment:* ${{ inputs.environment }}\n*Application:* ${{ env.APP_NAME }}\n*Endpoint:* ${{ env.API_GATEWAY_IP }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Slack notification - Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "❌ ArgoCD Deployment Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *ArgoCD Deployment Failed*\n*Environment:* ${{ inputs.environment }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

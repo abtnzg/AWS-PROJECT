@@ -1,0 +1,21 @@
+---
+# ArgoCD Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+
+---
+# ArgoCD Helm Repository
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-helm-repo
+  namespace: argocd
+data:
+  url: https://argoproj.github.io/argo-helm
+
+---
+# Install ArgoCD with Helm (run separately or via CI/CD)
+# helm repo add argocd https://argoproj.github.io/argo-helm
+# helm install argocd argocd/argo-cd -n argocd --values argocd-values.yaml

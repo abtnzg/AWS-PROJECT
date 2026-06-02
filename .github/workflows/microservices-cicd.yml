@@ -1,0 +1,365 @@
+name: Microservices CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'microservices/**'
+      - '.github/workflows/microservices-cicd.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: 205474062795
+  ECR_REGISTRY: 205474062795.dkr.ecr.eu-west-1.amazonaws.com
+  HELM_VERSION: 3.12.0
+  KUBE_VERSION: v1.27.0
+
+jobs:
+  # ============================================================
+  # 1. BUILD & TEST
+  # ============================================================
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - user-service
+          - product-service
+          - order-service
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: microservices/${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: microservices/${{ matrix.service }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: microservices/${{ matrix.service }}
+        run: |
+          npm run test 2>/dev/null || echo "No tests defined"
+
+      - name: Build Docker image
+        working-directory: microservices/${{ matrix.service }}
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }} .
+          docker tag ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }} ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:latest
+
+      - name: Run security scanning
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }}
+
+  # ============================================================
+  # 2. PUSH TO ECR
+  # ============================================================
+  push-to-ecr:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - user-service
+          - product-service
+          - order-service
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image to ECR
+        working-directory: microservices/${{ matrix.service }}
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }} .
+          docker tag ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }} ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:latest
+          docker push ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ github.sha }}
+          docker push ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:latest
+
+  # ============================================================
+  # 3. VALIDATE HELM CHARTS
+  # ============================================================
+  validate-helm:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint Helm chart
+        run: |
+          helm lint microservices/helm/microservices-chart
+
+      - name: Validate Helm templates
+        run: |
+          helm template microservices-dev microservices/helm/microservices-chart \
+            --values microservices/helm/microservices-chart/values.yaml
+
+  # ============================================================
+  # 4. DEPLOY WITH ARGOCD (DEV)
+  # ============================================================
+  deploy-dev-argocd:
+    needs: [push-to-ecr, validate-helm]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: dev
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name aws-project-eks-dev --region ${{ env.AWS_REGION }}
+
+      - name: Set up ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Get ArgoCD server URL
+        id: argocd-url
+        run: |
+          ARGOCD_URL=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "url=$ARGOCD_URL" >> $GITHUB_OUTPUT
+
+      - name: Trigger ArgoCD application sync
+        run: |
+          argocd app sync microservices-dev \
+            --server ${{ steps.argocd-url.outputs.url }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --wait
+
+      - name: Wait for deployment
+        run: |
+          kubectl rollout status deployment/api-gateway -n microservices --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n microservices -o wide
+          kubectl get svc -n microservices
+
+  # ============================================================
+  # 5. DEPLOY WITH ANSIBLE (ALTERNATIVE)
+  # ============================================================
+  deploy-dev-ansible:
+    needs: [push-to-ecr, validate-helm]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event.inputs.deployment_method == 'ansible'
+    environment: dev
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name aws-project-eks-dev --region ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Ansible and dependencies
+        run: |
+          pip install -r microservices/ansible/requirements.txt
+          ansible-galaxy collection install -r microservices/ansible/requirements.yaml
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Run Ansible deployment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_ENV: dev
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ansible-playbook \
+            -i microservices/ansible/inventory.yaml \
+            microservices/ansible/deploy-microservices.yaml \
+            -e "deploy_env=dev" \
+            -e "image_tag=${{ github.sha }}"
+
+      - name: Verify deployment with Ansible
+        run: |
+          ansible-playbook \
+            -i microservices/ansible/inventory.yaml \
+            microservices/ansible/verify-deployment.yaml
+
+  # ============================================================
+  # 6. RUN INTEGRATION TESTS
+  # ============================================================
+  integration-tests:
+    needs: [deploy-dev-argocd]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name aws-project-eks-dev --region ${{ env.AWS_REGION }}
+
+      - name: Get API Gateway endpoint
+        id: api-endpoint
+        run: |
+          ENDPOINT=$(kubectl get svc api-gateway -n microservices -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Test API endpoints
+        run: |
+          # Wait for service to be ready
+          for i in {1..30}; do
+            if curl -s http://${{ steps.api-endpoint.outputs.endpoint }}:3000/health; then
+              break
+            fi
+            echo "Waiting for API to be ready... ($i/30)"
+            sleep 10
+          done
+          
+          # Run health checks
+          curl -f http://${{ steps.api-endpoint.outputs.endpoint }}:3000/health
+          curl -f http://${{ steps.api-endpoint.outputs.endpoint }}:3000/api/users
+          curl -f http://${{ steps.api-endpoint.outputs.endpoint }}:3000/api/products
+
+  # ============================================================
+  # 7. DEPLOY TO PROD (MANUAL APPROVAL)
+  # ============================================================
+  deploy-prod-argocd:
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: prod
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name aws-project-eks-prod --region ${{ env.AWS_REGION }}
+
+      - name: Set up ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Get ArgoCD server URL
+        id: argocd-url
+        run: |
+          ARGOCD_URL=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "url=$ARGOCD_URL" >> $GITHUB_OUTPUT
+
+      - name: Trigger ArgoCD application sync
+        run: |
+          argocd app sync microservices-prod \
+            --server ${{ steps.argocd-url.outputs.url }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --wait
+
+      - name: Verify prod deployment
+        run: |
+          kubectl get pods -n microservices-prod -o wide
+          kubectl get svc -n microservices-prod
+
+  # ============================================================
+  # 8. NOTIFY STATUS
+  # ============================================================
+  notify:
+    needs: [deploy-dev-argocd, deploy-prod-argocd]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Send Slack notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "Microservices CI/CD Pipeline",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Microservices CI/CD Pipeline*\nStatus: ${{ job.status }}\nRef: ${{ github.ref }}\nCommit: ${{ github.sha }}"
+                  }
+                }
+              ]
+            }

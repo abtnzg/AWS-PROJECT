@@ -1,0 +1,46 @@
+---
+# Ansible Inventory for EKS
+all:
+  vars:
+    ansible_connection: local
+    aws_region: eu-west-1
+    eks_cluster_name: aws-project-eks-dev
+    helm_version: 3.12.0
+
+  children:
+    local:
+      hosts:
+        localhost:
+          ansible_host: 127.0.0.1
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    eks:
+      hosts:
+        eks-cluster:
+          cluster_name: aws-project-eks-dev
+          region: eu-west-1
+
+    argocd:
+      hosts:
+        argocd-server:
+          namespace: argocd
+          service_name: argocd-server
+
+    microservices:
+      hosts:
+        api-gateway:
+          service: api-gateway
+          port: 3000
+          namespace: microservices
+        user-service:
+          service: user-service
+          port: 3001
+          namespace: microservices
+        product-service:
+          service: product-service
+          port: 3002
+          namespace: microservices
+        order-service:
+          service: order-service
+          port: 3003
+          namespace: microservices

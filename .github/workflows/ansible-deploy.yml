@@ -1,0 +1,214 @@
+name: Deploy with Ansible
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      image_tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'latest'
+
+env:
+  AWS_REGION: eu-west-1
+  CLUSTER_NAME: aws-project-eks-dev
+  NAMESPACE: microservices
+  ANSIBLE_VERSION: 2.13
+
+jobs:
+  ansible-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and dependencies
+        run: |
+          echo "Installing Ansible and dependencies..."
+          pip install --upgrade pip
+          pip install -r microservices/requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster access
+        run: |
+          echo "Verifying cluster access..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install Ansible collections
+        run: |
+          echo "Installing Ansible collections..."
+          cd microservices
+          ansible-galaxy collection install -r ansible/requirements.yaml
+
+      - name: Validate Ansible playbooks
+        run: |
+          echo "Validating Ansible playbooks..."
+          cd microservices
+          ansible-playbook --syntax-check ansible/setup-argocd.yaml
+          ansible-playbook --syntax-check ansible/deploy-microservices.yaml
+          ansible-playbook --syntax-check ansible/verify-deployment.yaml
+
+      - name: Create Ansible inventory
+        run: |
+          cat > /tmp/inventory-override.yaml << EOF
+          all:
+            vars:
+              deploy_env: ${{ inputs.environment }}
+              image_tag: ${{ inputs.image_tag }}
+              aws_region: ${{ env.AWS_REGION }}
+              cluster_name: ${{ env.CLUSTER_NAME }}
+              namespace: ${{ env.NAMESPACE }}
+          EOF
+          cat /tmp/inventory-override.yaml
+
+      - name: Deploy with Ansible playbook
+        run: |
+          echo "Running Ansible deployment playbook..."
+          cd microservices
+          ansible-playbook \
+            -i ansible/inventory.yaml \
+            ansible/deploy-microservices.yaml \
+            -e "deploy_env=${{ inputs.environment }}" \
+            -e "image_tag=${{ inputs.image_tag }}" \
+            -v
+
+      - name: Verify deployment with Ansible
+        run: |
+          echo "Verifying deployment..."
+          cd microservices
+          ansible-playbook \
+            -i ansible/inventory.yaml \
+            ansible/verify-deployment.yaml \
+            -v
+
+      - name: Check deployment status
+        run: |
+          echo "====== Deployment Status ======"
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "====== Services ======"
+          kubectl get svc -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "====== Helm Release Status ======"
+          helm status microservices -n ${{ env.NAMESPACE }} || echo "Release not found"
+
+      - name: Get API Gateway endpoint
+        run: |
+          echo "Getting API Gateway endpoint..."
+          API_GATEWAY_IP=$(kubectl get svc api-gateway -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "API_GATEWAY_IP=$API_GATEWAY_IP" >> $GITHUB_ENV
+          echo "API Gateway endpoint: $API_GATEWAY_IP"
+
+      - name: Health check
+        continue-on-error: true
+        run: |
+          echo "Running health check..."
+          if [ -n "${{ env.API_GATEWAY_IP }}" ] && [ "${{ env.API_GATEWAY_IP }}" != "pending" ]; then
+            curl -f http://${{ env.API_GATEWAY_IP }}/health || true
+          fi
+
+      - name: Create deployment report
+        run: |
+          cat > ansible-deployment-report.txt << 'REPORT'
+          ===== Ansible Deployment Report =====
+          
+          Environment: ${{ inputs.environment }}
+          Image Tag: ${{ inputs.image_tag }}
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          Namespace: ${{ env.NAMESPACE }}
+          
+          API Gateway Endpoint: ${{ env.API_GATEWAY_IP }}
+          
+          Deployment Status:
+          REPORT
+          kubectl get pods -n ${{ env.NAMESPACE }} >> ansible-deployment-report.txt
+          echo "" >> ansible-deployment-report.txt
+          echo "Services:" >> ansible-deployment-report.txt
+          kubectl get svc -n ${{ env.NAMESPACE }} >> ansible-deployment-report.txt
+          cat ansible-deployment-report.txt
+
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansible-deployment-report
+          path: ansible-deployment-report.txt
+
+      - name: Slack notification - Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ Ansible Deployment Successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Ansible Deployment Successful*\n*Environment:* ${{ inputs.environment }}\n*Image Tag:* ${{ inputs.image_tag }}\n*Endpoint:* ${{ env.API_GATEWAY_IP }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Slack notification - Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "❌ Ansible Deployment Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Ansible Deployment Failed*\n*Environment:* ${{ inputs.environment }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

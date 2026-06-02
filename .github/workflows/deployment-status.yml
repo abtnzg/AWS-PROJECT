@@ -1,0 +1,199 @@
+name: Deployment Status
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to check'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  AWS_REGION: eu-west-1
+  CLUSTER_NAME: aws-project-eks-dev
+  NAMESPACE: microservices
+
+jobs:
+  status-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Check cluster status
+        run: |
+          echo "===== Cluster Status ====="
+          kubectl cluster-info
+          echo ""
+          echo "===== Node Status ====="
+          kubectl get nodes -o wide
+          echo ""
+          echo "===== Node Resource Availability ====="
+          kubectl top nodes || echo "Metrics not available"
+
+      - name: Check namespace status
+        run: |
+          echo "===== Namespace Status ====="
+          kubectl get ns
+          echo ""
+          echo "===== ${{ env.NAMESPACE }} Resources ====="
+          kubectl describe ns ${{ env.NAMESPACE }}
+
+      - name: Check pod status
+        run: |
+          echo "===== Pod Status ====="
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "===== Pod Resource Usage ====="
+          kubectl top pods -n ${{ env.NAMESPACE }} || echo "Metrics not available"
+          echo ""
+          echo "===== Pod Events ====="
+          kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' | tail -20
+
+      - name: Check service status
+        run: |
+          echo "===== Service Status ====="
+          kubectl get svc -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "===== Service Endpoints ====="
+          kubectl get endpoints -n ${{ env.NAMESPACE }}
+
+      - name: Check deployment status
+        run: |
+          echo "===== Deployment Status ====="
+          kubectl get deployments -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "===== Deployment Replicas ====="
+          kubectl get deployments -n ${{ env.NAMESPACE }} -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\t"}{.status.availableReplicas}{"\n"}{end}'
+
+      - name: Check Helm release status
+        run: |
+          echo "===== Helm Release Status ====="
+          helm status microservices -n ${{ env.NAMESPACE }} || echo "Release not found"
+          echo ""
+          echo "===== Helm Release History ====="
+          helm history microservices -n ${{ env.NAMESPACE }} || echo "No history available"
+
+      - name: Check HPA status
+        run: |
+          echo "===== HPA Status ====="
+          kubectl get hpa -n ${{ env.NAMESPACE }} -o wide || echo "No HPA found"
+
+      - name: Check PVC status
+        run: |
+          echo "===== PVC Status ====="
+          kubectl get pvc -n ${{ env.NAMESPACE }} -o wide || echo "No PVC found"
+
+      - name: Check network policies
+        run: |
+          echo "===== Network Policies ====="
+          kubectl get networkpolicies -n ${{ env.NAMESPACE }} || echo "No network policies found"
+
+      - name: Get API Gateway endpoint
+        run: |
+          echo "===== API Gateway Endpoint ====="
+          API_GATEWAY_IP=$(kubectl get svc api-gateway -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "Endpoint: $API_GATEWAY_IP"
+          echo "API_GATEWAY_IP=$API_GATEWAY_IP" >> $GITHUB_ENV
+
+      - name: Test API endpoint
+        continue-on-error: true
+        run: |
+          echo "===== API Health Check ====="
+          if [ -n "${{ env.API_GATEWAY_IP }}" ] && [ "${{ env.API_GATEWAY_IP }}" != "pending" ]; then
+            echo "Testing http://${{ env.API_GATEWAY_IP }}/health"
+            curl -i http://${{ env.API_GATEWAY_IP }}/health || echo "Health check failed"
+            echo ""
+            echo "Testing http://${{ env.API_GATEWAY_IP }}/status"
+            curl -i http://${{ env.API_GATEWAY_IP }}/status || echo "Status check failed"
+          else
+            echo "⚠️  API Gateway endpoint not yet available (LoadBalancer IP pending)"
+          fi
+
+      - name: Check logs
+        continue-on-error: true
+        run: |
+          echo "===== Recent Logs (API Gateway) ====="
+          kubectl logs -n ${{ env.NAMESPACE }} -l app=api-gateway --tail=20 || echo "No logs available"
+          echo ""
+          echo "===== Recent Logs (All Containers) ====="
+          kubectl logs -n ${{ env.NAMESPACE }} --all-containers=true --tail=10 -l app.kubernetes.io/part-of=microservices-platform || echo "No logs available"
+
+      - name: Create status report
+        run: |
+          cat > status-report.txt << 'REPORT'
+          ===== Deployment Status Report =====
+          
+          Timestamp: $(date)
+          Environment: ${{ inputs.environment }}
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          Namespace: ${{ env.NAMESPACE }}
+          
+          API Gateway Endpoint: ${{ env.API_GATEWAY_IP }}
+          
+          Cluster Info:
+          REPORT
+          kubectl cluster-info >> status-report.txt
+          echo "" >> status-report.txt
+          echo "Pod Status:" >> status-report.txt
+          kubectl get pods -n ${{ env.NAMESPACE }} >> status-report.txt
+          echo "" >> status-report.txt
+          echo "Service Status:" >> status-report.txt
+          kubectl get svc -n ${{ env.NAMESPACE }} >> status-report.txt
+          cat status-report.txt
+
+      - name: Upload status report
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-report-${{ inputs.environment }}
+          path: status-report.txt
+
+      - name: Slack notification
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "📊 Deployment Status Report",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "📊 *Deployment Status Report*\n*Environment:* ${{ inputs.environment }}\n*Cluster:* ${{ env.CLUSTER_NAME }}\n*API Endpoint:* ${{ env.API_GATEWAY_IP }}\n*Report:* See workflow artifacts"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,0 +1,229 @@
+name: Deploy with Helm
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      image_tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'latest'
+
+env:
+  AWS_REGION: eu-west-1
+  CLUSTER_NAME: aws-project-eks-dev
+  HELM_VERSION: 3.12.0
+  NAMESPACE: microservices
+  RELEASE_NAME: microservices
+
+jobs:
+  helm-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Update kubeconfig
+        run: |
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify cluster access
+        run: |
+          echo "Verifying cluster access..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Create namespace
+        run: |
+          echo "Creating namespace..."
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace ${{ env.NAMESPACE }} name=${{ env.NAMESPACE }} --overwrite
+
+      - name: Validate Helm chart
+        run: |
+          echo "Validating Helm chart..."
+          helm lint microservices/helm/microservices-chart/
+          helm template ${{ env.RELEASE_NAME }} microservices/helm/microservices-chart/ \
+            --namespace ${{ env.NAMESPACE }} \
+            > /tmp/helm-rendered.yaml
+          echo "Helm templates validated successfully"
+
+      - name: Create values file
+        run: |
+          cat > /tmp/helm-values.yaml << EOF
+          global:
+            environment: ${{ inputs.environment }}
+            region: ${{ env.AWS_REGION }}
+            accountId: "205474062795"
+          
+          apiGateway:
+            image:
+              tag: "${{ inputs.image_tag }}"
+          
+          userService:
+            image:
+              tag: "${{ inputs.image_tag }}"
+          
+          productService:
+            image:
+              tag: "${{ inputs.image_tag }}"
+          
+          orderService:
+            image:
+              tag: "${{ inputs.image_tag }}"
+          EOF
+          cat /tmp/helm-values.yaml
+
+      - name: Deploy with Helm
+        run: |
+          echo "Deploying with Helm to ${{ inputs.environment }} environment..."
+          helm upgrade --install ${{ env.RELEASE_NAME }} microservices/helm/microservices-chart/ \
+            --namespace ${{ env.NAMESPACE }} \
+            --values microservices/helm/microservices-chart/values.yaml \
+            --values /tmp/helm-values.yaml \
+            --wait \
+            --timeout 5m
+
+      - name: Wait for deployments
+        run: |
+          echo "Waiting for deployments to be ready..."
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/api-gateway -n ${{ env.NAMESPACE }} || true
+          
+          echo "Waiting for other services..."
+          kubectl wait --for=condition=ready pod \
+            -l app=api-gateway \
+            -n ${{ env.NAMESPACE }} \
+            --timeout=180s || true
+
+      - name: Check deployment status
+        run: |
+          echo "====== Deployment Status ======"
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "====== Services ======"
+          kubectl get svc -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "====== Helm Release Status ======"
+          helm status ${{ env.RELEASE_NAME }} -n ${{ env.NAMESPACE }}
+
+      - name: Get API Gateway endpoint
+        run: |
+          echo "Getting API Gateway endpoint..."
+          API_GATEWAY_IP=$(kubectl get svc api-gateway -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "API_GATEWAY_IP=$API_GATEWAY_IP" >> $GITHUB_ENV
+          echo "API Gateway endpoint: $API_GATEWAY_IP"
+
+      - name: Health check
+        continue-on-error: true
+        run: |
+          echo "Waiting for API Gateway to be accessible..."
+          for i in {1..30}; do
+            if [ -n "${{ env.API_GATEWAY_IP }}" ] && [ "${{ env.API_GATEWAY_IP }}" != "pending" ]; then
+              echo "Attempting health check..."
+              curl -f http://${{ env.API_GATEWAY_IP }}/health || true
+              break
+            fi
+            echo "Waiting for LoadBalancer IP... attempt $i/30"
+            sleep 10
+          done
+
+      - name: Create deployment report
+        run: |
+          cat > helm-deployment-report.txt << 'REPORT'
+          ===== Helm Deployment Report =====
+          
+          Environment: ${{ inputs.environment }}
+          Image Tag: ${{ inputs.image_tag }}
+          Cluster: ${{ env.CLUSTER_NAME }}
+          Region: ${{ env.AWS_REGION }}
+          Namespace: ${{ env.NAMESPACE }}
+          Release: ${{ env.RELEASE_NAME }}
+          
+          API Gateway Endpoint: ${{ env.API_GATEWAY_IP }}
+          
+          Deployment Status:
+          REPORT
+          kubectl get pods -n ${{ env.NAMESPACE }} >> helm-deployment-report.txt
+          echo "" >> helm-deployment-report.txt
+          echo "Services:" >> helm-deployment-report.txt
+          kubectl get svc -n ${{ env.NAMESPACE }} >> helm-deployment-report.txt
+          cat helm-deployment-report.txt
+
+      - name: Upload deployment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-deployment-report
+          path: helm-deployment-report.txt
+
+      - name: Slack notification - Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ Helm Deployment Successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Helm Deployment Successful*\n*Environment:* ${{ inputs.environment }}\n*Image Tag:* ${{ inputs.image_tag }}\n*Endpoint:* ${{ env.API_GATEWAY_IP }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Slack notification - Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "❌ Helm Deployment Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Helm Deployment Failed*\n*Environment:* ${{ inputs.environment }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
