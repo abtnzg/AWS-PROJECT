@@ -1,0 +1,123 @@
+name: Terraform Destroy & Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (dev, qua, rec, prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - qua
+          - rec
+          - prod
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - plan-only
+          - apply
+          - destroy
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      TERRAFORM_VERSION: 1.5.0
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      ACTION: ${{ github.event.inputs.action }}
+    
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: Terraform-infrastr
+        run: |
+          terraform init \
+            -backend-config="inventories/${ENVIRONMENT}/backend.hcl" \
+            -upgrade=false
+
+      - name: Terraform Workspace
+        working-directory: Terraform-infrastr
+        run: |
+          terraform workspace select $ENVIRONMENT || terraform workspace new $ENVIRONMENT
+
+      - name: Terraform Plan
+        working-directory: Terraform-infrastr
+        run: |
+          terraform plan \
+            -var-file="inventories/${ENVIRONMENT}/terraform.tfvars" \
+            -out=tfplan
+
+      - name: Terraform Destroy (if requested)
+        if: github.event.inputs.action == 'destroy'
+        working-directory: Terraform-infrastr
+        run: |
+          echo "⚠️  DESTROYING RESOURCES IN $ENVIRONMENT"
+          sleep 5
+          terraform destroy \
+            -var-file="inventories/${ENVIRONMENT}/terraform.tfvars" \
+            -auto-approve
+
+      - name: Terraform Apply (after destroy)
+        if: github.event.inputs.action == 'destroy'
+        working-directory: Terraform-infrastr
+        run: |
+          echo "🔄 Reapplying Terraform configuration..."
+          terraform apply \
+            -var-file="inventories/${ENVIRONMENT}/terraform.tfvars" \
+            -auto-approve
+
+      - name: Terraform Apply (direct apply)
+        if: github.event.inputs.action == 'apply'
+        working-directory: Terraform-infrastr
+        run: |
+          terraform apply \
+            -var-file="inventories/${ENVIRONMENT}/terraform.tfvars" \
+            -auto-approve
+
+      - name: Terraform Plan Only
+        if: github.event.inputs.action == 'plan-only'
+        working-directory: Terraform-infrastr
+        run: |
+          terraform plan \
+            -var-file="inventories/${ENVIRONMENT}/terraform.tfvars"
+
+      - name: Upload Terraform Plan
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan-${{ env.ENVIRONMENT }}-${{ github.run_id }}
+          path: Terraform-infrastr/tfplan
+          retention-days: 7
+
+      - name: Post Status to GitHub
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Terraform $ACTION completed successfully for $ENVIRONMENT"
+          else
+            echo "❌ Terraform $ACTION failed for $ENVIRONMENT"
+            exit 1
+          fi
