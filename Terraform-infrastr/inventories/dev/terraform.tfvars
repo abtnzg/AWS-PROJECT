@@ -10,11 +10,11 @@ eks_cluster_name = "aws-project-eks-dev"
 
 alb_name = "aws-project-alb-dev"
 
-route53_zone_id = "Z07837731K16F2Z68USQL"
-domain_name     = "851725468573.realhandsonlabs.net"
-san_names       = ["*.851725468573.realhandsonlabs.net"]
+route53_zone_id = "Z03284841TXS8G0UV28EC"
+domain_name     = "789051085078.realhandsonlabs.net"
+san_names       = ["*.789051085078.realhandsonlabs.net"]
 
-external_dns_hosted_zone_ids = ["Z07837731K16F2Z68USQL"]
+external_dns_hosted_zone_ids = ["Z03284841TXS8G0UV28EC"]
 
 enable_https = true
 
