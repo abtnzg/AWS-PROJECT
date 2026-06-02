@@ -17,14 +17,19 @@ on:
           - qua
           - rec
           - prod
-      apply:
-        description: "Run terraform apply after plan"
-        required: false
-        default: "false"
+      action:
+        description: "Action to perform"
+        required: true
+        default: "plan"
         type: choice
         options:
-          - "true"
-          - "false"
+          - "plan"
+          - "apply"
+          - "destroy"
+      confirm_destroy:
+        description: "Type 'yes' to confirm DESTROY operation (dangerous!)"
+        required: false
+        default: "no"
 
 permissions:
   contents: read
@@ -102,7 +107,7 @@ jobs:
   # ---------------------------------------------------------
   terraform:
     runs-on: ubuntu-latest
-    needs: [bootstrap]
+    needs: []
 
     steps:
       - name: Checkout repository
@@ -134,18 +139,8 @@ jobs:
       # -----------------------------
       - name: Set backend values
         run: |
-          if [ -n "${{ needs.bootstrap.outputs.bucket }}" ]; then
-            echo "TF_BUCKET=${{ needs.bootstrap.outputs.bucket }}" >> $GITHUB_ENV
-          else
-            echo "TF_BUCKET=${{ secrets.TF_BACKEND_BUCKET }}" >> $GITHUB_ENV
-          fi
-
-          if [ -n "${{ needs.bootstrap.outputs.lock_table }}" ]; then
-            echo "TF_LOCK=${{ needs.bootstrap.outputs.lock_table }}" >> $GITHUB_ENV
-          else
-            echo "TF_LOCK=${{ secrets.TF_BACKEND_LOCK_TABLE }}" >> $GITHUB_ENV
-          fi
-
+          echo "TF_BUCKET=${{ secrets.TF_BACKEND_BUCKET }}" >> $GITHUB_ENV
+          echo "TF_LOCK=${{ secrets.TF_BACKEND_LOCK_TABLE }}" >> $GITHUB_ENV
           # IMPORTANT : définir la clé du state
           echo "TF_KEY=terraform-${{ github.event.inputs.environment }}.tfstate" >> $GITHUB_ENV
 
@@ -174,8 +169,34 @@ jobs:
             -var-file=inventories/${{ github.event.inputs.environment }}/terraform.tfvars \
             -out=tfplan-${{ github.event.inputs.environment }}
 
-      
+      - name: Validation - Destroy Operation (MANUAL APPROVAL)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.confirm_destroy != 'yes' }}
+        run: |
+          echo "❌ DESTROY OPERATION BLOCKED"
+          echo "To confirm destroy, you must set 'confirm_destroy' to 'yes'"
+          exit 1
+
+      - name: Manual Approval - Waiting 30 seconds before destroy
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.confirm_destroy == 'yes' }}
+        run: |
+          echo "⚠️  DESTROYING RESOURCES IN ${{ github.event.inputs.environment }} in 30 seconds..."
+          echo "Press Ctrl+C to cancel"
+          sleep 30
+
+      - name: Terraform Destroy (if requested)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.confirm_destroy == 'yes' }}
+        working-directory: Terraform-infrastr
+        run: |
+          echo "🔥 DESTROYING ALL RESOURCES IN ${{ github.event.inputs.environment }}..."
+          terraform destroy \
+            -var-file=inventories/${{ github.event.inputs.environment }}/terraform.tfvars \
+            -auto-approve
+
       - name: Terraform Apply
-        if: ${{ github.event.inputs.apply == 'true' }}
+        if: ${{ github.event.inputs.action == 'apply' }}
         working-directory: Terraform-infrastr
         run: terraform apply -auto-approve tfplan-${{ github.event.inputs.environment }}
+
+      - name: Terraform Plan Only (no apply)
+        if: ${{ github.event.inputs.action == 'plan' }}
+        run: echo "✅ Plan completed successfully. Set action='apply' to execute changes."
