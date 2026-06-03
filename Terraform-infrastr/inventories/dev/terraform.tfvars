@@ -11,10 +11,10 @@ eks_cluster_name = "aws-project-eks-dev"
 alb_name = "aws-project-alb-dev"
 
 route53_zone_id = ""  # Validation EMAIL au lieu de DNS (permissions insuffisantes)
-domain_name     = "205474062795.realhandsonlabs.net"
-san_names       = ["*.205474062795.realhandsonlabs.net"]
+domain_name     = "510612307821.realhandsonlabs.net"
+san_names       = ["*.510612307821.realhandsonlabs.net"]
 
-external_dns_hosted_zone_ids = ["Z04288871E0WCJH9AQH0L"]
+external_dns_hosted_zone_ids = ["Z03795311ZTMAM6X181JQ"]
 
 enable_https = true
 
